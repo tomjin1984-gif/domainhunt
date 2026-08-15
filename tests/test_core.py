@@ -237,6 +237,7 @@ async def test_dynadot_search_price_string_is_parsed(tmp_path: Path) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["key"] == "test-key"
         assert request.url.params["command"] == "search"
+        assert request.url.path == "/api3.json"
         return httpx.Response(
             200,
             json={

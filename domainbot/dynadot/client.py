@@ -113,10 +113,7 @@ class DynadotClient:
     def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None):
         self.settings = settings
         self._owns_client = http_client is None
-        self._client = http_client or httpx.AsyncClient(
-            base_url=settings.dynadot_effective_base_url,
-            timeout=settings.dynadot_timeout_seconds,
-        )
+        self._client = http_client or httpx.AsyncClient(timeout=settings.dynadot_timeout_seconds)
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -130,7 +127,7 @@ class DynadotClient:
         request_params = {"key": self.settings.dynadot_api_key, **params}
         start = time.perf_counter()
         try:
-            response = await self._client.get("", params=request_params)
+            response = await self._client.get(self.settings.dynadot_effective_base_url, params=request_params)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
         except httpx.TimeoutException as exc:
             raise DynadotTimeoutError(str(exc)) from exc
