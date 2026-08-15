@@ -23,6 +23,7 @@ from domainbot.services.notifications import NotificationService
 from domainbot.services.registration import RegistrationService
 from domainbot.state_machine import DomainStatus, ScheduleType, apply_transition
 from domainbot.utils.domain import domain_tld, normalize_domain
+from domainbot.utils.logging import redact_secret
 from domainbot.utils.time import ensure_aware_utc
 
 
@@ -224,6 +225,11 @@ def test_domain_normalization() -> None:
     assert domain_tld("example.COM") == "com"
     with pytest.raises(ValueError):
         normalize_domain("bad domain")
+
+
+def test_log_redaction_removes_query_key() -> None:
+    message = 'GET https://api.dynadot.com/api3.json?key=secret123&command=search'
+    assert redact_secret(message) == 'GET https://api.dynadot.com/api3.json?key=[redacted]&command=search'
 
 
 @pytest.mark.asyncio
