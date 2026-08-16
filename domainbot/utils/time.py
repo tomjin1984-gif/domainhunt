@@ -65,6 +65,28 @@ def next_daily_window_after(
     return next_daily_window_start(local_time, timezone_name, now=now)
 
 
+def current_or_next_daily_window_start(
+    local_start: time,
+    timezone_name: str,
+    duration_seconds: int,
+    now: datetime | None = None,
+) -> datetime:
+    zone = ZoneInfo(timezone_name)
+    current_utc = ensure_aware_utc(now or utc_now())
+    current_local = current_utc.astimezone(zone)
+    candidate = datetime.combine(current_local.date(), local_start, zone).astimezone(UTC)
+    duration = timedelta(seconds=duration_seconds)
+
+    if candidate > current_utc:
+        previous = candidate - timedelta(days=1)
+        if previous + duration > current_utc:
+            return previous
+        return candidate
+
+    if candidate + duration > current_utc:
+        return candidate
+    return candidate + timedelta(days=1)
+
+
 def serialize_time(value: time) -> str:
     return value.replace(microsecond=0).isoformat()
-

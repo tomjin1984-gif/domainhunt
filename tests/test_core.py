@@ -373,6 +373,41 @@ async def test_daily_schedule_rolls_to_next_day_on_recovery(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_daily_24h_schedule_recovers_without_midnight_gap(tmp_path: Path) -> None:
+    rt = await make_runtime(tmp_path)
+    start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC)
+    try:
+        domain_id = await add_domain(rt, "always.ai", now=start, schedule_type=ScheduleType.DAILY, duration=86400, interval=10)
+        await rt.scheduler.recover(now)
+        item = await get_domain(rt, domain_id)
+        assert item.status == DomainStatus.WATCHING.value
+        assert ensure_aware_utc(item.start_at) == now
+        assert ensure_aware_utc(item.window_end) == datetime(2026, 1, 3, 0, 0, 0, tzinfo=UTC)
+        assert ensure_aware_utc(item.next_check_at) == now
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_daily_24h_registration_success_stops_future_recovery(tmp_path: Path) -> None:
+    rt = await make_runtime(tmp_path)
+    now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    try:
+        domain_id = await add_domain(rt, "done.ai", now=now, schedule_type=ScheduleType.DAILY, duration=86400, interval=10)
+        rt.client.search_results = [availability("done.ai", available=True)]
+        rt.client.register_results = [registration("done.ai", success=True)]
+        await rt.scheduler.run_once(now)
+        await rt.scheduler.recover(now + timedelta(days=1))
+        item = await get_domain(rt, domain_id)
+        assert item.status == DomainStatus.REGISTERED.value
+        assert item.next_check_at is None
+        assert rt.client.calls == [("search", "done.ai"), ("register", "done.ai")]
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
 async def test_successful_registration_stops_future_search(tmp_path: Path) -> None:
     rt = await make_runtime(tmp_path)
     now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)

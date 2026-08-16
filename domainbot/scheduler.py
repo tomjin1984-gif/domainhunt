@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -15,7 +16,7 @@ from domainbot.services.availability import AvailabilityService
 from domainbot.services.notifications import NotificationService
 from domainbot.services.registration import RegistrationService
 from domainbot.state_machine import ACTIVE_MONITOR_STATUSES, DomainStatus, ScheduleType, SKIP_STATUSES, apply_transition
-from domainbot.utils.time import ensure_aware_utc, next_daily_window_after, parse_local_time, utc_now
+from domainbot.utils.time import current_or_next_daily_window_start, ensure_aware_utc, next_daily_window_after, parse_local_time, utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -178,11 +179,8 @@ class DomainScheduler:
 
     async def _expire_or_rollover(self, session: AsyncSession, domain: Domain, now: datetime) -> bool:
         if domain.schedule_type == ScheduleType.DAILY.value and DomainStatus(domain.status) != DomainStatus.REGISTERED:
-            next_start = next_daily_window_after(domain.start_at, domain.timezone, now=now)
-            domain.start_at = next_start
-            domain.window_end = next_start + timedelta(seconds=domain.duration_seconds)
-            domain.next_check_at = next_start
-            apply_transition(domain, DomainStatus.SCHEDULED, allowed_from_any={DomainStatus.WATCHING, DomainStatus.EXPIRED, DomainStatus.ERROR, DomainStatus.TAKEN})
+            next_start = self._current_or_next_daily_start(domain, now)
+            self._set_daily_window(domain, next_start, now)
             return False
         apply_transition(domain, DomainStatus.EXPIRED, allowed_from_any={DomainStatus.WATCHING, DomainStatus.SCHEDULED, DomainStatus.ERROR, DomainStatus.TAKEN})
         domain.next_check_at = None
@@ -192,11 +190,8 @@ class DomainScheduler:
         start = ensure_aware_utc(domain.start_at)
         end = ensure_aware_utc(domain.window_end)
         if domain.schedule_type == ScheduleType.DAILY.value and now >= end:
-            next_start = next_daily_window_after(start, domain.timezone, now=now)
-            domain.start_at = next_start
-            domain.window_end = next_start + timedelta(seconds=domain.duration_seconds)
-            domain.next_check_at = next_start
-            apply_transition(domain, DomainStatus.SCHEDULED, allowed_from_any={DomainStatus.EXPIRED, DomainStatus.ERROR, DomainStatus.TAKEN, DomainStatus.WATCHING})
+            next_start = self._current_or_next_daily_start(domain, now)
+            self._set_daily_window(domain, next_start, now)
             return
         if now < start:
             domain.next_check_at = start
@@ -212,6 +207,35 @@ class DomainScheduler:
         if domain.schedule_type == ScheduleType.ONCE.value:
             apply_transition(domain, DomainStatus.EXPIRED, allowed_from_any={DomainStatus.PENDING, DomainStatus.SCHEDULED, DomainStatus.WATCHING, DomainStatus.ERROR, DomainStatus.TAKEN})
             domain.next_check_at = None
+
+    def _current_or_next_daily_start(self, domain: Domain, now: datetime) -> datetime:
+        local_start = (
+            parse_local_time(domain.daily_start_time)
+            if domain.daily_start_time
+            else ensure_aware_utc(domain.start_at).astimezone(ZoneInfo(domain.timezone)).time().replace(microsecond=0)
+        )
+        if domain.duration_seconds >= 24 * 60 * 60:
+            return current_or_next_daily_window_start(local_start, domain.timezone, domain.duration_seconds, now=now)
+        return next_daily_window_after(domain.start_at, domain.timezone, now=now)
+
+    def _set_daily_window(self, domain: Domain, next_start: datetime, now: datetime) -> None:
+        domain.start_at = next_start
+        domain.window_end = next_start + timedelta(seconds=domain.duration_seconds)
+        active = next_start <= now < ensure_aware_utc(domain.window_end)
+        domain.next_check_at = now if active else next_start
+        target_status = DomainStatus.WATCHING if active else DomainStatus.SCHEDULED
+        apply_transition(
+            domain,
+            target_status,
+            allowed_from_any={
+                DomainStatus.PENDING,
+                DomainStatus.SCHEDULED,
+                DomainStatus.WATCHING,
+                DomainStatus.EXPIRED,
+                DomainStatus.ERROR,
+                DomainStatus.TAKEN,
+            },
+        )
 
     async def _schedule_next_check(self, domain_id: int, previous_next: datetime | None, completed_at: datetime | None = None) -> None:
         async with self.session_factory() as session:
