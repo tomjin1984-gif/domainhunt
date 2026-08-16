@@ -27,7 +27,7 @@ from domainbot.state_machine import DomainStatus, ScheduleType
 from domainbot.utils.domain import domain_tld, normalize_domain
 from domainbot.utils.duration import parse_duration_seconds
 from domainbot.utils.logging import configure_logging
-from domainbot.utils.time import ensure_aware_utc, next_daily_window_start, parse_local_datetime, parse_local_time, utc_now
+from domainbot.utils.time import current_or_next_daily_window_start, ensure_aware_utc, next_daily_window_start, parse_local_datetime, parse_local_time, utc_now
 
 
 app = typer.Typer(help="Dynadot multi-domain monitoring and registration daemon.")
@@ -49,20 +49,26 @@ def _parse_start(
     *,
     schedule_type: ScheduleType,
     timezone_name: str,
+    duration_seconds: int,
+    now: datetime | None = None,
 ) -> tuple[datetime, str | None]:
+    current = ensure_aware_utc(now or utc_now())
     if start is None or not start.strip():
-        now = utc_now()
         if schedule_type == ScheduleType.DAILY:
-            local = now.astimezone(ZoneInfo(timezone_name)).time().replace(microsecond=0)
-            return now, local.isoformat()
-        return now, None
+            local = current.astimezone(ZoneInfo(timezone_name)).time().replace(microsecond=0)
+            return current, local.isoformat()
+        return current, None
     raw = start.strip()
     if schedule_type == ScheduleType.DAILY and raw.count(":") >= 1 and "-" not in raw:
         local_time = parse_local_time(raw)
-        return next_daily_window_start(local_time, timezone_name), local_time.replace(microsecond=0).isoformat()
+        if duration_seconds >= 24 * 60 * 60:
+            start_at = current_or_next_daily_window_start(local_time, timezone_name, duration_seconds, now=current)
+        else:
+            start_at = next_daily_window_start(local_time, timezone_name, now=current)
+        return start_at, local_time.replace(microsecond=0).isoformat()
     if raw.count(":") >= 1 and "-" not in raw:
         local_time = parse_local_time(raw)
-        return next_daily_window_start(local_time, timezone_name), local_time.replace(microsecond=0).isoformat()
+        return next_daily_window_start(local_time, timezone_name, now=current), local_time.replace(microsecond=0).isoformat()
     start_at = parse_local_datetime(raw, timezone_name)
     daily_time = None
     if schedule_type == ScheduleType.DAILY:
@@ -89,7 +95,14 @@ async def _add_domain(
     interval_seconds = int(interval or settings.default_interval_seconds)
     if interval_seconds <= 0:
         raise typer.BadParameter("interval must be positive")
-    start_at, daily_start_time = _parse_start(start, schedule_type=schedule_type, timezone_name=tz)
+    now = utc_now()
+    start_at, daily_start_time = _parse_start(
+        start,
+        schedule_type=schedule_type,
+        timezone_name=tz,
+        duration_seconds=duration_seconds,
+        now=now,
+    )
     window_end = start_at + timedelta(seconds=duration_seconds)
     effective = effective_interval(interval_seconds, settings)
     if effective > interval_seconds:
@@ -100,7 +113,6 @@ async def _add_domain(
             settings.dynadot_rate_limit_rpm,
         )
 
-    now = utc_now()
     status = DomainStatus.SCHEDULED if start_at > now else DomainStatus.WATCHING
     domain = Domain(
         domain=normalized,

@@ -10,6 +10,7 @@ import pytest
 import httpx
 from sqlalchemy import select
 
+from domainbot.cli import _parse_start
 from domainbot.config import Settings
 from domainbot.database import create_engine, create_session_factory, init_db
 from domainbot.dynadot.client import DynadotClient
@@ -230,6 +231,32 @@ def test_domain_normalization() -> None:
 def test_log_redaction_removes_query_key() -> None:
     message = 'GET https://api.dynadot.com/api3.json?key=secret123&command=search'
     assert redact_secret(message) == 'GET https://api.dynadot.com/api3.json?key=[redacted]&command=search'
+
+
+def test_cli_daily_24h_time_only_start_uses_current_window() -> None:
+    now = datetime(2026, 8, 17, 0, 10, 0, tzinfo=UTC)
+    start_at, daily_time = _parse_start(
+        "00:00:00",
+        schedule_type=ScheduleType.DAILY,
+        timezone_name="UTC",
+        duration_seconds=86400,
+        now=now,
+    )
+    assert start_at == datetime(2026, 8, 17, 0, 0, 0, tzinfo=UTC)
+    assert daily_time == "00:00:00"
+
+
+def test_cli_short_daily_time_only_start_uses_next_window_after_miss() -> None:
+    now = datetime(2026, 8, 17, 0, 10, 0, tzinfo=UTC)
+    start_at, daily_time = _parse_start(
+        "00:00:00",
+        schedule_type=ScheduleType.DAILY,
+        timezone_name="UTC",
+        duration_seconds=3600,
+        now=now,
+    )
+    assert start_at == datetime(2026, 8, 18, 0, 0, 0, tzinfo=UTC)
+    assert daily_time == "00:00:00"
 
 
 @pytest.mark.asyncio
