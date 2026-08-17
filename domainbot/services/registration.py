@@ -16,6 +16,7 @@ from domainbot.models import Domain, RegistrationAttempt
 from domainbot.services.notifications import NotificationService
 from domainbot.state_machine import DomainStatus, apply_transition
 from domainbot.utils.time import utc_now
+from domainbot.utils.tld_rules import effective_registration_years
 
 
 logger = logging.getLogger(__name__)
@@ -105,13 +106,15 @@ class RegistrationService:
             domain = await session.get(Domain, domain_id)
             if domain is None or domain.max_price is None:
                 return False
-            actual = Decimal(availability.price)
+            years = effective_registration_years(domain.domain, domain.registration_years)
+            domain.registration_years = years
+            actual = Decimal(availability.price) * Decimal(years)
             limit = Decimal(domain.max_price)
             if actual <= limit:
                 return False
             apply_transition(domain, DomainStatus.PRICE_EXCEEDED)
             domain.next_check_at = None
-            domain.last_error = f"price exceeded: actual={actual} {availability.currency}, limit={limit}"
+            domain.last_error = f"price exceeded: estimated_total={actual} {availability.currency}, limit={limit}"
             await session.commit()
             await self.notifications.price_exceeded(
                 domain.domain,
@@ -126,6 +129,8 @@ class RegistrationService:
             domain = await session.get(Domain, domain_id)
             if domain is None:
                 return
+            years = effective_registration_years(domain.domain, domain.registration_years)
+            domain.registration_years = years
             domain.status = DomainStatus.AVAILABLE.value
             domain.next_check_at = None
             domain.last_error = "dry-run: simulated register only"
@@ -137,7 +142,7 @@ class RegistrationService:
                     http_status=availability.http_status,
                     api_response_code=availability.api_code,
                     api_response_message="SIMULATED_REGISTER",
-                    price=availability.price,
+                    price=availability.price * Decimal(years) if availability.price is not None else None,
                     currency=availability.currency,
                     success=False,
                     confirmation_status="dry_run",
@@ -170,13 +175,15 @@ class RegistrationService:
                     return None
                 if current == DomainStatus.WATCHING:
                     apply_transition(domain, DomainStatus.AVAILABLE)
+                years = effective_registration_years(domain.domain, domain.registration_years)
+                domain.registration_years = years
                 apply_transition(domain, DomainStatus.REGISTERING)
                 domain.registration_attempt_count += 1
                 attempt = RegistrationAttempt(
                     domain_id=domain.id,
                     attempted_at=utc_now(),
                     request_id=request_id,
-                    price=availability.price,
+                    price=availability.price * Decimal(years) if availability.price is not None else None,
                     currency=availability.currency,
                     success=False,
                     confirmation_status="started",
@@ -187,7 +194,7 @@ class RegistrationService:
                 return RegistrationLock(
                     domain_id=domain.id,
                     domain=domain.domain,
-                    years=domain.registration_years,
+                    years=years,
                     attempt_id=attempt.id,
                     request_id=request_id,
                     premium=availability.premium,

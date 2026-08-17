@@ -28,6 +28,7 @@ from domainbot.utils.domain import domain_tld, normalize_domain
 from domainbot.utils.duration import parse_duration_seconds
 from domainbot.utils.logging import configure_logging
 from domainbot.utils.time import current_or_next_daily_window_start, ensure_aware_utc, next_daily_window_start, parse_local_datetime, parse_local_time, utc_now
+from domainbot.utils.tld_rules import effective_registration_years
 
 
 app = typer.Typer(help="Dynadot multi-domain monitoring and registration daemon.")
@@ -114,6 +115,15 @@ async def _add_domain(
         )
 
     status = DomainStatus.SCHEDULED if start_at > now else DomainStatus.WATCHING
+    requested_registration_years = registration_years or settings.default_registration_years
+    final_registration_years = effective_registration_years(normalized, requested_registration_years)
+    if final_registration_years != requested_registration_years:
+        logger.info(
+            "registration years adjusted for TLD rule: domain=%s requested=%s effective=%s",
+            normalized,
+            requested_registration_years,
+            final_registration_years,
+        )
     domain = Domain(
         domain=normalized,
         tld=domain_tld(normalized),
@@ -128,7 +138,7 @@ async def _add_domain(
         timezone=tz,
         daily_start_time=daily_start_time,
         next_check_at=start_at if start_at > now else now,
-        registration_years=registration_years or settings.default_registration_years,
+        registration_years=final_registration_years,
         max_price=max_price,
     )
     engine = create_engine(settings)
@@ -313,6 +323,10 @@ def status(domain: Annotated[str, typer.Argument()]) -> None:
                     "next_check_at",
                     "last_check_at",
                     "last_available_at",
+                    "registration_years",
+                    "max_price",
+                    "last_observed_price",
+                    "last_observed_currency",
                     "registration_attempt_count",
                     "registered_at",
                     "dynadot_order_id",

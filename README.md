@@ -198,6 +198,10 @@ Notifications include watching start, available, registering, success, failure, 
 
 The implementation sends generic Dynadot Register parameters: `domain`, `duration`, `currency`, and optional `premium=1`.
 
+`.ai` is handled as a 2-year minimum registration TLD. If you omit `--registration-years` or pass `1`, the bot stores/uses `2` for `.ai`.
+
+`max_price` is treated as the estimated total registration charge, not the single-year unit price. If Dynadot Search returns your account-discounted `.ai` price as `83.00` and registration uses 2 years, the price guard compares `166.00` to `max_price`.
+
 Some TLDs may have registry-specific rules or optional parameters in Dynadot's current docs. Validate `.ai`, `.com`, and any other target TLD in sandbox/test mode before live operation. If Search cannot return a reliable premium price, `max_price` cannot fully protect against unknown registry-side pricing; start with dry-run and low-risk domains.
 
 ## Development
@@ -209,4 +213,3 @@ python3 -m venv .venv
 ```
 
 Current test suite covers scheduling fairness, single Dynadot concurrency, register priority, intervals/windows, daily/once behavior, pause/registered skips, registration success, timeout confirmation, duplicate prevention, restart recovery, max price, dry-run, network failures, and state transitions.
-

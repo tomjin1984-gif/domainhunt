@@ -26,6 +26,7 @@ from domainbot.state_machine import DomainStatus, ScheduleType, apply_transition
 from domainbot.utils.domain import domain_tld, normalize_domain
 from domainbot.utils.logging import redact_secret
 from domainbot.utils.time import ensure_aware_utc
+from domainbot.utils.tld_rules import effective_registration_years, minimum_registration_years
 
 
 UTC = timezone.utc
@@ -46,6 +47,7 @@ class FakeDynadotClient:
         self.register_results: list[RegistrationResult | Exception | bool] = []
         self.confirm_results: list[ConfirmationResult | Exception | bool | None] = []
         self.calls: list[tuple[str, str]] = []
+        self.register_years: list[int] = []
 
     async def search_domain(self, domain: str) -> AvailabilityResult:
         self.calls.append(("search", domain))
@@ -58,6 +60,7 @@ class FakeDynadotClient:
 
     async def register_domain(self, domain: str, *, years: int, premium: bool = False) -> RegistrationResult:
         self.calls.append(("register", domain))
+        self.register_years.append(years)
         value = self.register_results.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -231,6 +234,12 @@ def test_domain_normalization() -> None:
 def test_log_redaction_removes_query_key() -> None:
     message = 'GET https://api.dynadot.com/api3.json?key=secret123&command=search'
     assert redact_secret(message) == 'GET https://api.dynadot.com/api3.json?key=[redacted]&command=search'
+
+
+def test_ai_minimum_registration_years() -> None:
+    assert minimum_registration_years("example.ai") == 2
+    assert effective_registration_years("example.ai", 1) == 2
+    assert effective_registration_years("example.com", 1) == 1
 
 
 def test_cli_daily_24h_time_only_start_uses_current_window() -> None:
@@ -497,6 +506,39 @@ async def test_price_exceeded_never_registers(tmp_path: Path) -> None:
         item = await get_domain(rt, domain_id)
         assert item.status == DomainStatus.PRICE_EXCEEDED.value
         assert rt.client.calls == [("search", "premium.ai")]
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_ai_price_guard_uses_two_year_total(tmp_path: Path) -> None:
+    rt = await make_runtime(tmp_path)
+    now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    try:
+        domain_id = await add_domain(rt, "discount.ai", now=now, max_price=Decimal("100.00"))
+        rt.client.search_results = [availability("discount.ai", available=True, price=Decimal("83.00"))]
+        await rt.scheduler.run_once(now)
+        item = await get_domain(rt, domain_id)
+        assert item.status == DomainStatus.PRICE_EXCEEDED.value
+        assert item.registration_years == 2
+        assert rt.client.calls == [("search", "discount.ai")]
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_ai_register_uses_two_year_minimum(tmp_path: Path) -> None:
+    rt = await make_runtime(tmp_path)
+    now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    try:
+        domain_id = await add_domain(rt, "register.ai", now=now, max_price=Decimal("200.00"))
+        rt.client.search_results = [availability("register.ai", available=True, price=Decimal("83.00"))]
+        rt.client.register_results = [registration("register.ai", success=True)]
+        await rt.scheduler.run_once(now)
+        item = await get_domain(rt, domain_id)
+        assert item.status == DomainStatus.REGISTERED.value
+        assert item.registration_years == 2
+        assert rt.client.register_years == [2]
     finally:
         await rt.close()
 
